@@ -1,0 +1,98 @@
+version: "3.9"
+
+services:
+
+  spark_task_0:
+    build: .
+    working_dir: /data
+    volumes:
+      - ./data:/data
+    command: [ "http://37.139.43.86/bank.csv" ]
+    entrypoint: ["wget"]
+
+  spark_task_1:
+    build: .
+    environment:
+      - PYTHONPATH=${PYTHONPATH}:/app/src
+    volumes:
+      - ./data:/data
+      - ./src/01_csv_to_parquet:/app/src
+    entrypoint: python3
+    command: [ "/app/src/main.py",
+               "--source_csv_file=/data/bank.csv",
+               "--target_parquet_dir=/data/bank.parquet" ]
+    depends_on:
+      postgresql:
+        condition: service_healthy
+
+  spark_task_2:
+    build: .
+    volumes:
+      - ./data:/data
+      - ./src/02_parquet_to_postgres:/app/src
+    links:
+      - postgresql:postgresql
+    entrypoint: python3
+    command: [ "/app/src/main.py",
+               "--source_parquet_file=/data/bank.parquet",
+               "--target_tablename=public.bank",
+               "--url=jdbc:postgresql://postgresql:5432/postgres",
+               "--login=p_user",
+               "--password=password123" ]
+    depends_on:
+      postgresql:
+        condition: service_healthy
+
+  postgresql:
+    image: 'bitnami/postgresql:13'
+    ports:
+      - 5432:5432
+    volumes:
+      - './services/postgresql:/bitnami/postgresql'
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+      - POSTGRESQL_USERNAME=p_user
+      - POSTGRESQL_PASSWORD=password123
+      - POSTGRESQL_DATABASE=postgres
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "airflow" ]
+      interval: 5s
+      retries: 5
+
+  zeppelin:
+    build: zeppelin
+    volumes:
+      - ./data:/data
+      - ./zeppelin/notebook:/zeppelin/notebook
+      - ./zeppelin/conf:/zeppelin/conf
+    environment:
+      - ZEPPELIN_ADDR=0.0.0.0
+    ports:
+      - 8080:8080
+
+  spark-master:
+    image: 'bitnami/spark:3.2.0'
+    environment:
+      - SPARK_MODE=master
+      - SPARK_MASTER_URL=spark://spark-master:7077
+    ports:
+      - 7077:7077
+      - 8079:8080
+    networks:
+      - spark-course
+
+  spark-worker:
+    image: 'bitnami/spark:3.2.0'
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_WORKER_CORES=1
+    deploy:
+      mode: replicated
+      replicas: 1
+    networks:
+      - spark-course
+
+networks:
+  spark-course:
